@@ -1,0 +1,139 @@
+---
+title: "Pratical Machine Learning Project"
+author: "JP"
+date: "September 12, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE, echo=F}
+knitr::opts_chunk$set(echo = F)
+rm(list = ls())
+library(randomForest)
+library(caret)
+library(rpart)
+```
+
+## Introduction
+In this exercise I examine data from personal activity sensors to create an statistical model to predict which exercise was perfomed by a user at a determined time. 
+
+The results from this analysis can provide guidance to the each particular user as to which exercise is more favorable to do. 
+
+The data is provide by the Practical Machine Learning Class in Coursera. There are two sets, on with actual data from different users (pml-training.csv) and a smaller subset to apply the model on (pml-testing.csv). 
+
+Here, I upload the data from the respective urls, clean it, and set it ready for model construction. Then compare different models and decide which model to use in the predictions. Finally, present the prediction for each of the users in the testing data set. 
+
+# Data upload and cleaning
+I downloaded the data directly from the websites using the urls provided in the instructions. The was loaded in r converting all missing data into NA. Next, I checked to make sure all the names in each data set correspond, and remove columns with no data, including the first 7 columns.   
+
+```{r echo = FALSE, results="hide"}
+# Check if the files exist in the current directory, if not, downlowad them.
+if (!file.exists("pml-training.csv")) {
+  download.file("http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", destfile = "pml-training.csv")
+}
+if (!file.exists("pml-testing.csv")) {
+  download.file("http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", destfile = "pml-testing.csv")
+}
+
+#Loading the data and set all missing values as NA. 
+training_dataset <- read.csv("pml-training.csv", na.strings=c("NA","#DIV/0!",""))
+predict_dataset <- read.csv("pml-testing.csv", na.strings=c("NA","#DIV/0!",""))
+
+# Withhold 25% of the data on a partirion and create a training and test set
+inTrain = createDataPartition(training_dataset$classe, p = 0.75, list = F)
+my_training = training_dataset[inTrain,]
+my_testing = training_dataset[-inTrain,]
+
+# Check column names in both data sets. 
+clean_train = colnames(my_training)
+clean_train_1 = colnames(my_training[, -58]) 
+my_testing <- my_testing[clean_train]         
+my_testing <- my_testing[clean_train_1]             
+
+# Remove columns with NA's and first seven columns
+NoUse_cols = names(my_testing[,colSums(is.na(my_testing)) == 0])[8:59]
+my_training <- my_training[,c(NoUse_cols,"classe")]
+my_testing <- my_testing[,c(NoUse_cols, "classe")]
+nsv=nearZeroVar(my_training, saveMetrics=TRUE)
+num_unCol=nrow(nsv[nsv[,"zeroVar"] + nsv[,"nzv"] > 0, ] )
+```
+
+# Check and remove (if necesary) columns with no-variability:
+Now I used the check for zero variance function in the variables revealing this data has `r num_unCol[1]` variables with no variability, therefore there is no need to remove any of additional variable.  
+
+# Detecting the more relevant variables 
+Using the random forest method I detected the 5 most relevant variables of the analysis. 
+```{r echo = FALSE, results="hide"}
+outcome = which(names(my_training) == "classe")
+highCorrCols = findCorrelation(abs(cor(my_training[,-outcome])),0.90)
+highCorrFeatures = names(my_training)[highCorrCols]
+training = my_training[,-highCorrCols]
+outcome = which(names(training) == "classe")
+
+Feat_rF = randomForest(training[,-outcome], training[,outcome], importance = T)
+importance_feat = data.frame(Feat_rF$importance)
+imp_Features = order(-importance_feat$MeanDecreaseGini)
+inImp = createDataPartition(training$classe, p = 0.05, list = F)
+featurePlot(training[inImp,imp_Features[1:5]],training$classe[inImp], plot = "pairs")
+
+#The most important features are:
+row.names(importance_feat[imp_Features[1:5],])
+
+```
+
+These variables are: `r row.names(importance_feat[imp_Features[1:5],])`. None of these important features shows a linear relation with eachother. 
+
+
+# Model selection
+I decided to built three training sets with a different method (KNN, Random forest and Rpart) and determine which had a higher accuracy. 
+```{r echo = FALSE, results="hide"}
+mod_KNN = train(classe ~ ., my_training, method = "knn", trControl = trainControl(method = "adaptive_cv"))
+mod_RF = train(classe ~ ., my_training, method = "rf", ntree = 200, trControl = trainControl(method = "oob"))
+mod_Rpart=train(classe ~ ., my_training, method = "rpart", control=rpart.control(minsplit=30, cp=0.001))
+
+KNN_res = data.frame(mod_KNN$results)
+RF_res = data.frame(mod_RF$results)
+Rpart_RS = data.frame(mod_Rpart$results)
+
+KNN_fit = predict(mod_KNN, my_testing)
+RF_fit = predict(mod_RF, my_testing)
+Rpart_fit = predict(mod_Rpart, my_testing)
+
+# Accuracty on the test set
+KNN_ac=confusionMatrix(KNN_fit,my_testing$classe)$overall[[1]]
+RF_ac=confusionMatrix(RF_fit,my_testing$classe)$overall[[1]]
+Rpart_ac=confusionMatrix(Rpart_fit,my_testing$classe)$overall[[1]]
+```
+The accuracies are:`r KNN_ac` for KNN, `r RF_ac` for Random Forest, and `r Rpart_ac` for Rpart. With the highest being that of the Random Forest Model. 
+
+Then I calculated the out sample error for each model: 
+```{r echo = FALSE, results="hide"}
+KNN_pred <- predict(mod_KNN, my_training)
+out_Sample_Error_accu_KNN = sum(KNN_pred == my_training$classe)/length(KNN_pred)
+out_Sample_Error_KNN = 1 - out_Sample_Error_accu_KNN
+KNN_oSError = out_Sample_Error_KNN * 100
+
+RF_pred <- predict(mod_RF, my_training)
+out_Sample_Error_accu_RF = sum(RF_pred == my_training$classe)/length(RF_pred)
+out_Sample_Error_RF = 1 - out_Sample_Error_accu_RF
+RF_oSError = out_Sample_Error_RF * 100
+
+Rpart_pred <- predict(mod_Rpart, my_training)
+out_Sample_Error_accu_Rpart = sum(Rpart_pred == my_training$classe)/length(Rpart_pred)
+out_Sample_Error_Rpart = 1 - out_Sample_Error_accu_Rpart
+Rpart_oSError = out_Sample_Error_Rpart * 100
+
+```
+KNN model out of sample error = `r KNN_oSError`% \n
+Random Forest model  = `r RF_oSError`%\n
+Rpart model = `r Rpart_oSError`%.\n
+
+The error in the Random Forest model is the lowest. 
+
+# Predictions
+For the predictions on the testing data set, I decided to use the random forest model. This model showed higher accuracy and no out of sample error. 
+
+```{r echo = FALSE, results="hide"}
+# Prediction from the testing data
+PreDicciones = predict(mod_RF, predict_dataset)
+```
+The predictions for the 20 users in the testing data set are: `r predict(mod_RF, predict_dataset)`
